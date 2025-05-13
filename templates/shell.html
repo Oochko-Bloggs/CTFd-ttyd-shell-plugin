@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% block content %}
+<style>
+  html, body {
+    margin: 0;
+    padding: 0;
+    height: 100%;
+    overflow-y: hidden;
+  }
+
+  #shell-container {
+    width: 100vw;
+    height: 85vh;
+    padding: 0;
+    margin: 0;
+    display: flex;
+    overflow: hidden;
+  }
+
+  #shell {
+    width: 100%;
+    height: 100%;
+    border: none;
+  }
+</style>
+
+<div id="shell-container">
+  <iframe id="shell" src="http://localhost:7681" frameborder="0"></iframe>
+</div>
+{% endblock %}

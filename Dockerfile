@@ -1,8 +1,16 @@
 FROM ubuntu:22.04
 
 # Create ctfuser
-RUN useradd -m ctfuser && apt-get update && \
-    apt-get install -y curl ca-certificates bash && \
+RUN useradd -m ctfuser && \
+    apt-get update && \
+    apt-get install -y \
+    curl \
+    ca-certificates \
+    bash \
+    iproute2 \          # provides `ip`
+    net-tools \         # provides `ifconfig`
+    can-utils \         # provides `candump`, `cansend`, etc.
+    sudo && \           # required for sudo in entrypoint
     curl -L https://github.com/tsl0922/ttyd/releases/download/1.7.7/ttyd.x86_64 -o /usr/local/bin/ttyd && \
     chmod +x /usr/local/bin/ttyd
 

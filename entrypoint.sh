@@ -1,16 +1,22 @@
 #!/bin/bash
 
-# Only run setup if vcan0 not already created
-if ! ip link show vcan0 > /dev/null 2>&1; then
-    sudo modprobe vcan
-    sudo ip link add dev vcan0 type vcan
-    sudo ip link set up vcan0
+USERNAME="${USERNAME:-ctfuser}"
+
+# Create user if needed
+if ! id "$USERNAME" &>/dev/null; then
+    useradd -m "$USERNAME"
+    echo "$USERNAME ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
 fi
 
-# Optional: disable eth0 if exists
-if ip link show eth0 > /dev/null 2>&1; then
-    sudo ip link set dev eth0 down
-fi
+# Load vcan module and set up vcan0
+modprobe vcan
+ip link add dev vcan0 type vcan || true
+ip link set up vcan0
 
-# Start ttyd shell
-exec ttyd --writable -p 7681 /bin/bash
+# Optional: disable eth0 if needed
+#if ip link show eth0 &>/dev/null; then
+#    ip link set dev eth0 down
+#fi
+
+# Start ttyd server as created user
+exec su - "$USERNAME" -c "ttyd --writable --interface 0.0.0.0 -p 7681 /bin/bash"

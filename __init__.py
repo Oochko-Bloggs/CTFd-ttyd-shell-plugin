@@ -1,4 +1,4 @@
-import docker, socket
+import docker, socket, random
 from flask import Blueprint, render_template, redirect, url_for
 from CTFd.plugins import register_plugin_assets_directory
 from CTFd.utils.decorators import authed_only
@@ -35,8 +35,11 @@ def assign_port(start=9000, end=10000):
                 except (KeyError, ValueError, TypeError):
                     continue
 
+    candidate_ports = list(range(start, end))
+    random.shuffle(candidate_ports)
+
     # Find a port that's both free on the host AND not already mapped in Docker
-    for port in range(start, end):
+    for port in candidate_ports:
         if port in used_ports:
             continue
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:

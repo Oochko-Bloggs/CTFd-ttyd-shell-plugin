@@ -22,9 +22,118 @@
     height: 100%;
     border: none;
   }
+
+  #time-left {
+    color: #fff !important;
+    font-weight: bold;
+    background: rgba(0,0,0,0.7);
+    padding: 2px 8px;
+    border-radius: 4px;
+  }
 </style>
 
+<div style="margin: 10px 0; text-align: right; display: flex; align-items: center; justify-content: flex-end;">
+  <span id="time-left" style="margin-right: 20px;"></span>
+  <button id="extend-btn" style="padding: 8px 16px; font-size: 1rem;">Extend Shell Time (+1 min)</button>
+  <span id="extend-msg" style="margin-left: 10px; color: green;"></span>
+</div>
 <div id="shell-container">
   <iframe id="shell" src="http://localhost:{{ port }}" frameborder="0"></iframe>
+  <script>
+    const shellFrame = document.getElementById("shell");
+    const maxRetries = 5;
+    let retryCount = 0;
+    let shellLoaded = false;
+    let reloadTimeout = null;
+
+    function reloadIfNotLoaded() {
+      if (!shellLoaded) {
+        retryCount++;
+        if (retryCount <= maxRetries) {
+          console.log(`Shell not ready, retrying (${retryCount})...`);
+          window.location.reload();
+        } else {
+          alert("Shell failed to start. Please try again later.");
+        }
+      }
+    }
+
+    // If iframe loads, mark as ready and cancel scheduled reload
+    shellFrame.addEventListener("load", () => {
+      shellLoaded = true;
+      if (reloadTimeout) clearTimeout(reloadTimeout);
+      console.log("Shell loaded.");
+    });
+
+    // Try a quick check after 300ms (can adjust if needed)
+    reloadTimeout = setTimeout(reloadIfNotLoaded, 300);
+
+    document.getElementById("extend-btn").onclick = function() {
+      fetch("/extend_shell")
+        .then(resp => resp.text().then(text => ({status: resp.status, text})))
+        .then(({status, text}) => {
+          const msg = document.getElementById("extend-msg");
+          if (status === 200) {
+            msg.style.color = "green";
+            msg.textContent = "Shell time extended by 1 min!";
+            updateTimeLeft(); // Immediately update timer after extension
+            // If expired, reload to create new session
+            if (expired) {
+              setTimeout(() => window.location.reload(), 500);
+            }
+          } else {
+            msg.style.color = "red";
+            msg.textContent = "Failed to extend shell time.";
+          }
+          setTimeout(() => { msg.textContent = ""; }, 3000);
+        })
+        .catch(() => {
+          const msg = document.getElementById("extend-msg");
+          msg.style.color = "red";
+          msg.textContent = "Failed to extend shell time.";
+          setTimeout(() => { msg.textContent = ""; }, 3000);
+        });
+    };
+
+    let lastSecondsLeft = 0;
+
+    function formatTimeLeft(seconds) {
+      if (seconds <= 0) return "Expired";
+      const h = Math.floor(seconds / 3600);
+      const m = Math.floor((seconds % 3600) / 60);
+      const s = seconds % 60;
+      return `${h}h ${m}m ${s}s`;
+    }
+
+    function updateTimeLeft() {
+      fetch("/shell_time_left")
+        .then(resp => {
+          if (!resp.ok) throw new Error("Network error");
+          return resp.json();
+        })
+        .then(data => {
+          let left = data.seconds_left;
+          if (typeof left !== "number" || isNaN(left) || left < 0) left = 0;
+          lastSecondsLeft = left;
+          document.getElementById("time-left").textContent = `Time left: ${formatTimeLeft(left)}`;
+        })
+        .catch(() => {
+          document.getElementById("time-left").textContent = "Time left: Expired";
+          lastSecondsLeft = 0;
+        });
+    }
+
+    // Smooth countdown in browser, sync with server every 5 seconds
+    setInterval(() => {
+      if (lastSecondsLeft !== null && lastSecondsLeft > 0) {
+        lastSecondsLeft--;
+        document.getElementById("time-left").textContent = `Time left: ${formatTimeLeft(lastSecondsLeft)}`;
+      }
+    }, 1000);
+
+    setInterval(updateTimeLeft, 5000); // Sync with server every 5s
+    updateTimeLeft();
+  </script>
 </div>
+
 {% endblock %}

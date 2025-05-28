@@ -1,9 +1,68 @@
-import docker, socket, random, time
-from flask import Blueprint, render_template, redirect, url_for
+import docker, socket, random, time, threading
+from datetime import datetime, timedelta
+from flask import Blueprint, render_template, redirect, url_for, jsonify
 from CTFd.plugins import register_plugin_assets_directory
 from CTFd.utils.decorators import authed_only
 from CTFd.utils.user import get_current_user
-from CTFd.utils.security.passwords import check_password
+
+# Track timers and expiry for each user
+user_containers = {}
+
+def stop_and_remove_container(container_id):
+    client = docker.from_env()
+    try:
+        container = client.containers.get(container_id)
+        print(f"[ttyd_shell] Stopping and removing container {container_id}")
+        container.stop()
+        container.remove()
+    except Exception as e:
+        print(f"[ttyd_shell] Error during stopping: {e}")
+
+def set_container_timer(user_id, container_id, lifetime_seconds):
+    # Cancel previous timer if exists
+    if user_id in user_containers and user_containers[user_id].get("timer"):
+        user_containers[user_id]["timer"].cancel()
+    expires_at = datetime.utcnow() + timedelta(seconds=lifetime_seconds)
+    timer = threading.Timer(
+        lifetime_seconds,
+        stop_and_remove_container,
+        args=[container_id]
+    )
+    timer.start()
+    user_containers[user_id] = {
+        "container_id": container_id,
+        "timer": timer,
+        "expires_at": expires_at
+    }
+
+def extend_container_timer(user_id, extra_seconds):
+    if user_id not in user_containers:
+        print("[ttyd_shell] No running container to extend.")
+        return False
+    old = user_containers[user_id]
+    old["timer"].cancel()
+    new_expiry = old["expires_at"] + timedelta(seconds=extra_seconds)
+    seconds_from_now = (new_expiry - datetime.utcnow()).total_seconds()
+    if seconds_from_now <= 0:
+        stop_and_remove_container(old["container_id"])
+        return False
+    timer = threading.Timer(
+        seconds_from_now,
+        stop_and_remove_container,
+        args=[old["container_id"]]
+    )
+    timer.start()
+    user_containers[user_id]["timer"] = timer
+    user_containers[user_id]["expires_at"] = new_expiry
+    print(f"[ttyd_shell] Extended container for user {user_id} until {new_expiry}")
+    return True
+
+def get_seconds_left(user_id):
+    if user_id in user_containers:
+        expires_at = user_containers[user_id]["expires_at"]
+        left = int((expires_at - datetime.utcnow()).total_seconds())
+        return max(0, left)
+    return 0
 
 def load(app):
     shell_plugin = Blueprint(
@@ -23,7 +82,7 @@ def load(app):
     @authed_only
     def extend_shell():
         user = get_current_user()
-        success = extend_container_expiry(user.name, hours=1)
+        success = extend_container_timer(user.name, 60)
         if success:
             return "Shell time extended by 1 hour!", 200
         else:
@@ -33,27 +92,14 @@ def load(app):
     @authed_only
     def shell_time_left():
         user = get_current_user()
-        client = docker.from_env()
-        container_name = f"ttyd_shell_{user.name}"
-        try:
-            container = client.containers.get(container_name)
-            expiry = container.labels.get('expiry')
-            if expiry:
-                expiry = int(expiry)
-                now = int(time.time())
-                seconds_left = max(0, expiry - now)
-                return {"seconds_left": seconds_left}
-        except Exception:
-            pass
-        return {"seconds_left": 0}
+        seconds_left = get_seconds_left(user.name)
+        return jsonify({"seconds_left": seconds_left})
 
     app.register_blueprint(shell_plugin)
 
 def assign_port(start=9000, end=10000):
     client = docker.from_env()
     used_ports = set()
-
-    # Collect all ports already used by Docker containers
     for c in client.containers.list():
         ports = c.attrs['HostConfig'].get('PortBindings', {})
         if '7681/tcp' in ports:
@@ -62,11 +108,8 @@ def assign_port(start=9000, end=10000):
                     used_ports.add(int(binding['HostPort']))
                 except (KeyError, ValueError, TypeError):
                     continue
-
     candidate_ports = list(range(start, end))
     random.shuffle(candidate_ports)
-
-    # Find a port that's both free on the host AND not already mapped in Docker
     for port in candidate_ports:
         if port in used_ports:
             continue
@@ -74,52 +117,7 @@ def assign_port(start=9000, end=10000):
             sock.settimeout(0.1)
             if sock.connect_ex(('localhost', port)) != 0:
                 return port
-
     raise RuntimeError("No available ports found in range.")
-
-def get_container_expiry(container):
-    # Returns expiry timestamp (int) or None
-    expiry = container.labels.get('expiry')
-    if expiry:
-        try:
-            return int(expiry)
-        except Exception:
-            return None
-    return None
-
-def set_container_expiry(container, expiry_ts):
-    # Docker doesn't allow updating labels directly, so we recreate with new label
-    # Not used for extension, just for initial creation
-    pass  # Placeholder for future use if needed
-
-def extend_container_expiry(username, hours=1):
-    client = docker.from_env()
-    container_name = f"ttyd_shell_{username}"
-    try:
-        container = client.containers.get(container_name)
-        expiry = get_container_expiry(container)
-        now = int(time.time())
-        if not expiry or expiry < now:
-            expiry = now + hours * 3600
-        else:
-            expiry += hours * 3600
-        # Docker doesn't support updating labels in place, so workaround: commit & recreate
-        container.commit(repository=container.image.tags[0], changes=None)
-        container.remove(force=True)
-        new_container = client.containers.run(
-            image=container.image.tags[0],
-            name=container_name,
-            detach=True,
-            ports=container.attrs['HostConfig']['PortBindings'],
-            environment=container.attrs['Config']['Env'],
-            cap_add=container.attrs['HostConfig'].get('CapAdd', []),
-            tty=True,
-            auto_remove=True,
-            labels={**container.labels, 'expiry': str(expiry)}
-        )
-        return True
-    except Exception:
-        return False
 
 def create_shell_container(username):
     client = docker.from_env()
@@ -131,12 +129,13 @@ def create_shell_container(username):
             raise docker.errors.NotFound("Container existed but not running")
         else:
             print(f"[DEBUG] Container already running for {username}")
+            # Reset timer if container is running
+            set_container_timer(username, container.id, get_seconds_left(username) or 60)
             return int(container.attrs['HostConfig']['PortBindings']['7681/tcp'][0]['HostPort'])
     except docker.errors.NotFound:
         pass
 
     host_port = assign_port()
-    expiry = int(time.time()) + 3600  # 1 hour from now
     print(f"[DEBUG] Creating new container for {username} on port {host_port}")
     container = client.containers.run(
         image="ttyd_shell",
@@ -147,6 +146,7 @@ def create_shell_container(username):
         cap_add=["NET_ADMIN"],
         tty=True,
         auto_remove=True,
-        labels={"expiry": str(expiry)}
+        labels={}
     )
+    set_container_timer(username, container.id, 60)  # 1 minute for debugging
     return host_port

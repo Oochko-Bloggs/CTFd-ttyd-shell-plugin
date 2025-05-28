@@ -31,3 +31,4 @@
 	-   Set the **Route** to `/shell`
 ----
 
+ 5. Add 'docker' module to the requirements.txt

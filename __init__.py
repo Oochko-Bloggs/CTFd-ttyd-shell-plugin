@@ -35,17 +35,27 @@ def set_container_timer(user_id, container_id, lifetime_seconds):
         "expires_at": expires_at
     }
 
+MAX_SHELL_SECONDS = 7200  # 2 hours
+
 def extend_container_timer(user_id, extra_seconds):
     if user_id not in user_containers:
         print("[ttyd_shell] No running container to extend.")
-        return False
+        return False, "No running container to extend."
     old = user_containers[user_id]
     old["timer"].cancel()
-    new_expiry = old["expires_at"] + timedelta(seconds=extra_seconds)
-    seconds_from_now = (new_expiry - datetime.utcnow()).total_seconds()
+    now = datetime.utcnow()
+    current_left = int((old["expires_at"] - now).total_seconds())
+    if current_left >= MAX_SHELL_SECONDS:
+        # Already at max
+        print(f"[ttyd_shell] User {user_id} already at max shell time.")
+        return False, "Maximum shell time is 2 hours."
+    # Calculate new expiry, but cap at max
+    new_left = min(current_left + extra_seconds, MAX_SHELL_SECONDS)
+    new_expiry = now + timedelta(seconds=new_left)
+    seconds_from_now = (new_expiry - now).total_seconds()
     if seconds_from_now <= 0:
         stop_and_remove_container(old["container_id"])
-        return False
+        return False, "Shell expired."
     timer = threading.Timer(
         seconds_from_now,
         stop_and_remove_container,
@@ -55,7 +65,9 @@ def extend_container_timer(user_id, extra_seconds):
     user_containers[user_id]["timer"] = timer
     user_containers[user_id]["expires_at"] = new_expiry
     print(f"[ttyd_shell] Extended container for user {user_id} until {new_expiry}")
-    return True
+    if new_left == MAX_SHELL_SECONDS:
+        return True, "Shell time set to maximum (2 hours)."
+    return True, "Shell time extended!"
 
 def get_seconds_left(user_id):
     if user_id in user_containers:
@@ -82,11 +94,11 @@ def load(app):
     @authed_only
     def extend_shell():
         user = get_current_user()
-        success = extend_container_timer(user.name, 60)
+        success, msg = extend_container_timer(user.name, 3600)  # 1 hour
         if success:
-            return "Shell time extended by 1 hour!", 200
+            return msg, 200
         else:
-            return "Failed to extend shell time.", 500
+            return msg, 400
 
     @shell_plugin.route('/shell_time_left')
     @authed_only
@@ -130,23 +142,32 @@ def create_shell_container(username):
         else:
             print(f"[DEBUG] Container already running for {username}")
             # Reset timer if container is running
-            set_container_timer(username, container.id, get_seconds_left(username) or 60)
+            set_container_timer(username, container.id, get_seconds_left(username) or 3600)  # 1 hour
             return int(container.attrs['HostConfig']['PortBindings']['7681/tcp'][0]['HostPort'])
     except docker.errors.NotFound:
         pass
 
     host_port = assign_port()
     print(f"[DEBUG] Creating new container for {username} on port {host_port}")
+
+    # Add security: drop dangerous capabilities and set a restricted entrypoint
+    # Remove sudo by using a custom image or entrypoint that does not include sudo
+    # Example: override entrypoint to /bin/bash and ensure sudo is not installed in the image
+
     container = client.containers.run(
         image="ttyd_shell",
         name=container_name,
         detach=True,
         ports={'7681/tcp': host_port},
         environment={"USERNAME": username},
-        cap_add=["NET_ADMIN"],
+        cap_drop=["ALL"],  # Drop all Linux capabilities
         tty=True,
         auto_remove=True,
-        labels={}
+        labels={},
+        mem_limit="256m",
+        nano_cpus=200_000_000,
+        entrypoint="/bin/bash",  # Restrict to bash only
+        user="1000:1000"  # Run as non-root user (ensure UID 1000 exists in image)
     )
-    set_container_timer(username, container.id, 60)  # 1 minute for debugging
+    set_container_timer(username, container.id, 3600)  # 1 hour
     return host_port

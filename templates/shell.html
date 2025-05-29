@@ -8,6 +8,20 @@
     overflow-y: hidden;
   }
 
+  #shell-loading {
+    width: 100vw;
+    height: 85vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 2rem;
+    color: #888;
+    background: #222;
+    z-index: 10;
+    position: absolute;
+    left: 0; top: 0;
+  }
+
   #shell-container {
     width: 100vw;
     height: 85vh;
@@ -15,6 +29,7 @@
     margin: 0;
     display: flex;
     overflow: hidden;
+    position: relative;
   }
 
   #shell {
@@ -38,36 +53,9 @@
   <span id="extend-msg" style="margin-left: 10px; color: green;"></span>
 </div>
 <div id="shell-container">
-  <iframe id="shell" src="http://localhost:{{ port }}" frameborder="0"></iframe>
+  <div id="shell-loading">Starting shell, please wait...</div>
+  <iframe id="shell" src="" frameborder="0" style="display:none;"></iframe>
   <script>
-    const shellFrame = document.getElementById("shell");
-    const maxRetries = 5;
-    let retryCount = 0;
-    let shellLoaded = false;
-    let reloadTimeout = null;
-
-    function reloadIfNotLoaded() {
-      if (!shellLoaded) {
-        retryCount++;
-        if (retryCount <= maxRetries) {
-          console.log(`Shell not ready, retrying (${retryCount})...`);
-          window.location.reload();
-        } else {
-          alert("Shell failed to start. Please try again later.");
-        }
-      }
-    }
-
-    // If iframe loads, mark as ready and cancel scheduled reload
-    shellFrame.addEventListener("load", () => {
-      shellLoaded = true;
-      if (reloadTimeout) clearTimeout(reloadTimeout);
-      console.log("Shell loaded.");
-    });
-
-    // Try a quick check after 300ms (can adjust if needed)
-    reloadTimeout = setTimeout(reloadIfNotLoaded, 300);
-
     document.getElementById("extend-btn").onclick = function() {
       fetch("/extend_shell")
         .then(resp => resp.text().then(text => ({status: resp.status, text})))
@@ -129,7 +117,30 @@
 
     setInterval(updateTimeLeft, 5000); // Sync with server every 5s
     updateTimeLeft();
+
+    // Wait for ttyd to be ready before showing iframe
+    const port = {{ port }};
+    const shellUrl = "http://localhost:" + port;
+    const iframe = document.getElementById("shell");
+    const loading = document.getElementById("shell-loading");
+
+    function checkShellReady(retries = 0) {
+      fetch(shellUrl, {mode: "no-cors"})
+        .then(() => {
+          // ttyd is up (even if CORS blocks, fetch will resolve)
+          iframe.src = shellUrl;
+          iframe.style.display = "";
+          loading.style.display = "none";
+        })
+        .catch(() => {
+          if (retries < 30) { // Try for up to ~15 seconds
+            setTimeout(() => checkShellReady(retries + 1), 500);
+          } else {
+            loading.textContent = "Shell failed to start. Please refresh.";
+          }
+        });
+    }
+    checkShellReady();
   </script>
 </div>
-
 {% endblock %}

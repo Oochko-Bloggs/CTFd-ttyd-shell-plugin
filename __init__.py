@@ -15,6 +15,11 @@ def stop_and_remove_container(container_id):
         print(f"[ttyd_shell] Stopping and removing container {container_id}")
         container.stop()
         container.remove()
+        # Mark the user's timer as expired
+        for user_id, info in user_containers.items():
+            if info.get("container_id") == container_id:
+                info["expires_at"] = datetime.utcnow()  # Set expiry to now
+                break
     except Exception as e:
         print(f"[ttyd_shell] Error during stopping: {e}")
 
@@ -146,28 +151,33 @@ def create_shell_container(username):
             return int(container.attrs['HostConfig']['PortBindings']['7681/tcp'][0]['HostPort'])
     except docker.errors.NotFound:
         pass
+    except Exception as e:
+        print(f"[ERROR] Unexpected error when getting container: {e}")
 
     host_port = assign_port()
     print(f"[DEBUG] Creating new container for {username} on port {host_port}")
 
-    # Add security: drop dangerous capabilities and set a restricted entrypoint
-    # Remove sudo by using a custom image or entrypoint that does not include sudo
-    # Example: override entrypoint to /bin/bash and ensure sudo is not installed in the image
+    try:
+        container = client.containers.run(
+            image="ttyd_shell",
+            name=container_name,
+            detach=True,
+            ports={'7681/tcp': host_port},
+            environment={"USERNAME": username},
+            cap_add=["NET_ADMIN"],
+            tty=True,
+            auto_remove=True,
+            labels={},
+            mem_limit="256m",
+            nano_cpus=200_000_000
+            #user="1000:1000"
+        )
+        print(f"[DEBUG] Container created: {container.id}")
+        set_container_timer(username, container.id, 3600)  # 1 hour
+        return host_port
+    except Exception as e:
+        print(f"[ERROR] Failed to create container for {username}: {e}")
+        import traceback
+        traceback.print_exc()
+        raise
 
-    container = client.containers.run(
-        image="ttyd_shell",
-        name=container_name,
-        detach=True,
-        ports={'7681/tcp': host_port},
-        environment={"USERNAME": username},
-        cap_drop=["ALL"],  # Drop all Linux capabilities
-        tty=True,
-        auto_remove=True,
-        labels={},
-        mem_limit="256m",
-        nano_cpus=200_000_000,
-        entrypoint="/bin/bash",  # Restrict to bash only
-        user="1000:1000"  # Run as non-root user (ensure UID 1000 exists in image)
-    )
-    set_container_timer(username, container.id, 3600)  # 1 hour
-    return host_port
